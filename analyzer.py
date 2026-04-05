@@ -1079,8 +1079,8 @@ def _build_analysis_result(
 
     result = {
         "status": "scored",
-        "resume_filename": resume_file.name,
-        "job_filename": job_file.name,
+        "resume_filename": resume_filename,
+        "job_filename": job_filename,
         "resume_text": resume_text,
         "job_text": job_text,
         "resume_cleaned_text": resume_preprocessed["cleaned_text"],
