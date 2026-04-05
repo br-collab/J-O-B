@@ -322,66 +322,136 @@ if st.button("Score Rewritten Resume", type="secondary"):
             st.error(f"Scoring failed: {exc}")
 
 # ---------------------------------------------------------------------------
-# Download as Word document
+# Download as Word document — MD-level financial services format spec
+# Calibri 9.5pt, all black, 0.5" margins, bold+underlined section headers,
+# role | firm dates right-tab, page break before Key Skills
 # ---------------------------------------------------------------------------
 st.divider()
 
-def build_docx(summary, experience_drafts, edited_bullets, skills):
+def build_docx(summary, experience_drafts, edited_bullets, skills, resume_text=""):
     from docx import Document as DocxDocument
     from docx.shared import Pt, Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    BLACK = RGBColor(0x00, 0x00, 0x00)
+    FONT = "Calibri"
+    BODY = Pt(9.5)
+
+    lines = (resume_text or "").splitlines()
+    name = lines[0].strip() if lines else "Candidate Name"
+    tagline = lines[1].strip() if len(lines) > 1 else ""
+    contact = lines[2].strip() if len(lines) > 2 else ""
+
+    def _set_run(run, bold=False, italic=False, underline=False):
+        run.font.name = FONT
+        run.font.color.rgb = BLACK
+        run.font.size = BODY
+        run.bold = bold
+        run.italic = italic
+        run.underline = underline
+
+    def _set_spacing(para, before=0, after=0, line=None):
+        pPr = para._p.get_or_add_pPr()
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:before"), str(before))
+        spacing.set(qn("w:after"), str(after))
+        if line:
+            spacing.set(qn("w:line"), str(line))
+            spacing.set(qn("w:lineRule"), "auto")
+        pPr.append(spacing)
+
+    def _section_header(text):
+        p = doc.add_paragraph()
+        _set_spacing(p, before=100, after=30)
+        run = p.add_run(text.upper())
+        _set_run(run, bold=True, underline=True)
+
+    def _role_line(role, firm, dates):
+        p = doc.add_paragraph()
+        _set_spacing(p, before=60, after=0)
+        p.paragraph_format.tab_stops.add_tab_stop(Inches(7.0), WD_ALIGN_PARAGRAPH.RIGHT)
+        r1 = p.add_run(role)
+        _set_run(r1, bold=True)
+        r2 = p.add_run(f"  |  {firm}")
+        _set_run(r2, italic=True)
+        r3 = p.add_run(f"\t{dates}")
+        _set_run(r3)
+
+    def _bullet(text):
+        p = doc.add_paragraph(style="List Bullet")
+        _set_spacing(p, before=0, after=0, line=218)
+        p.paragraph_format.left_indent = Inches(0.18)
+        p.paragraph_format.first_line_indent = Inches(-0.14)
+        _set_run(p.add_run(text))
+
+    def _body(text, before=0, after=0):
+        p = doc.add_paragraph()
+        _set_spacing(p, before=before, after=after, line=218)
+        _set_run(p.add_run(text))
+
+    def _page_break():
+        p = doc.add_paragraph()
+        _set_spacing(p, before=0, after=0)
+        br = OxmlElement("w:br")
+        br.set(qn("w:type"), "page")
+        p.add_run()._r.append(br)
 
     doc = DocxDocument()
 
-    # Page margins — 1 inch all sides
-    for section in doc.sections:
-        section.top_margin = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin = Inches(1)
-        section.right_margin = Inches(1)
+    for sec in doc.sections:
+        sec.top_margin = Inches(0.5)
+        sec.bottom_margin = Inches(0.5)
+        sec.left_margin = Inches(0.5)
+        sec.right_margin = Inches(0.5)
 
-    def add_heading(text, level=1):
-        p = doc.add_heading(text, level=level)
-        p.runs[0].font.color.rgb = RGBColor(0x1F, 0x39, 0x64)
-        return p
+    doc.styles["Normal"].paragraph_format.space_before = Pt(0)
+    doc.styles["Normal"].paragraph_format.space_after = Pt(0)
+    doc.styles["Normal"].font.name = FONT
+    doc.styles["Normal"].font.size = BODY
+    doc.styles["Normal"].font.color.rgb = BLACK
 
-    def add_bullet(text):
-        p = doc.add_paragraph(style="List Bullet")
-        p.runs[0].text if p.runs else None
-        run = p.add_run(text.lstrip("• ").strip())
-        run.font.size = Pt(11)
-        return p
+    p = doc.add_paragraph()
+    _set_spacing(p, before=0, after=10)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_run(p.add_run(name), bold=True)
 
-    def add_body(text):
-        p = doc.add_paragraph(text)
-        p.runs[0].font.size = Pt(11) if p.runs else None
-        return p
-
-    # Name placeholder
-    add_heading("REWRITTEN RESUME", level=1)
-
-    # Summary
-    add_heading("Professional Summary", level=2)
-    add_body(summary)
-
-    # Experience
-    add_heading("Professional Experience", level=2)
-    for i, role_draft in enumerate(experience_drafts):
-        role_line = f"{role_draft.get('role', '')}  |  {role_draft.get('firm', '')}  |  {role_draft.get('dates', '')}"
+    if tagline:
         p = doc.add_paragraph()
-        run = p.add_run(role_line)
-        run.bold = True
-        run.font.size = Pt(11)
+        _set_spacing(p, before=0, after=6)
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _set_run(p.add_run(tagline), italic=True)
+
+    if contact:
+        p = doc.add_paragraph()
+        _set_spacing(p, before=0, after=80)
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _set_run(p.add_run(contact))
+
+    _section_header("Professional Summary")
+    _body(summary, before=30)
+
+    _section_header("Professional Experience")
+    for i, role_draft in enumerate(experience_drafts):
+        _role_line(
+            role_draft.get("role", ""),
+            role_draft.get("firm", ""),
+            role_draft.get("dates", ""),
+        )
 
         bullets_raw = edited_bullets.get(i, "")
         for line in bullets_raw.splitlines():
             clean = line.strip().lstrip("•").strip()
             if clean:
-                add_bullet(clean)
+                _bullet(clean)
+        if i < len(experience_drafts) - 1:
+            _body("", before=50)
 
-    # Skills
-    add_heading("Key Skills & Expertise", level=2)
-    add_body(skills)
+    _page_break()
+
+    _section_header("Key Skills & Expertise")
+    _body(skills, before=30)
 
     buf = BytesIO()
     doc.save(buf)
@@ -395,6 +465,7 @@ try:
         experience_drafts=experience_drafts,
         edited_bullets=edited_bullets,
         skills=edited_skills,
+        resume_text=result.get("resume_text", ""),
     )
     st.download_button(
         label="Download Rewritten Resume (.docx)",
