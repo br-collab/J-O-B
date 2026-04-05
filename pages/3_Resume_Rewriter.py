@@ -28,11 +28,15 @@ st.write(
 result = st.session_state.get("analysis_result")
 resume_file = st.session_state.get("resume_file")
 
-if not result or not resume_file:
+if not result:
     st.warning(
-        "No analysis found. Go to **Resume Analyzer**, upload your resume and a job description, "
-        "and click Analyze first."
+        "No analysis found in this session. Go to **Resume Analyzer**, "
+        "upload your resume and a job description, click **Analyze**, "
+        "then return here. Note: refreshing the page clears session data — "
+        "keep the analyzer tab open in the same browser session."
     )
+    if st.button("Go to Resume Analyzer"):
+        st.switch_page("app.py")
     st.stop()
 
 resume_text = result.get("resume_text", "")

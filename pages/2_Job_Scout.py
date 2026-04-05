@@ -1,120 +1,120 @@
+"""
+pages/2_Job_Scout.py
+
+Job Scout tab — fetches open roles from target firms, scores them
+against your uploaded resume, and surfaces the best fits.
+"""
+
 import streamlit as st
 
-from analyzer import analyze_resume_text_against_job_text
-from job_scout import TARGET_FIRMS, TARGET_TITLE_KEYWORDS, fetch_target_roles
-from utils import EmptyDocumentError, FileTooLargeError, UnsupportedFileTypeError
+from job_scout import fetch_target_roles, score_roles_against_resume, TARGET_FIRMS, TARGET_TITLE_KEYWORDS
 
 
-st.set_page_config(page_title="Job Scout", page_icon="🔎", layout="centered")
+st.set_page_config(page_title="Job Scout", page_icon="🔍", layout="centered")
 
 st.title("Job Scout")
 st.write(
-    "Upload your resume to scan target firms and rank public job-board postings by analyzer fit."
-)
-st.caption(
-    f"Tracking {len(TARGET_FIRMS)} firms and {len(TARGET_TITLE_KEYWORDS)} title keywords across Greenhouse and Lever."
+    "Upload your resume and scan open roles across your target firms. "
+    "Each role is scored against your resume using the same analyzer."
 )
 
-resume_file = st.file_uploader(
-    "Upload Resume (.pdf, .docx)",
-    type=["pdf", "docx"],
-    key="job_scout_resume",
-)
-minimum_score = st.slider("Minimum fit score", min_value=0, max_value=100, value=40, step=5)
-max_results = st.slider("Results to show", min_value=5, max_value=25, value=10, step=5)
-scan_clicked = st.button("Scan target firms", type="primary")
+# ---------------------------------------------------------------------------
+# Sidebar: show target firms and title keywords for transparency
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.write("### Target Firms")
+    for firm in TARGET_FIRMS:
+        st.write(f"- {firm['name']}")
 
-if scan_clicked:
-    if not resume_file:
-        st.error("Please upload a resume before running Job Scout.")
+    st.write("### Title Keywords")
+    for kw in TARGET_TITLE_KEYWORDS:
+        st.write(f"- {kw}")
+    st.caption("Edit these in job_scout.py to refine your search.")
+
+# ---------------------------------------------------------------------------
+# Resume upload — check session state first
+# ---------------------------------------------------------------------------
+session_resume = st.session_state.get("resume_file")
+if session_resume:
+    st.success(f"Using resume from analyzer session: **{session_resume.name}**")
+    resume_file = session_resume
+else:
+    resume_file = st.file_uploader(
+        "Upload your resume (.pdf or .docx)",
+        type=["pdf", "docx"],
+        key="scout_resume",
+    )
+    if resume_file:
+        st.session_state["resume_file"] = resume_file
+
+score_toggle = st.checkbox(
+    "Score each role against my resume",
+    value=True,
+    help="Uncheck to just browse open roles without running the analyzer.",
+)
+
+run_scout = st.button(
+    "Run Job Scout",
+    type="primary",
+    disabled=(not resume_file and score_toggle),
+)
+
+if not resume_file and score_toggle:
+    st.info("Upload your resume above to enable scoring, or uncheck scoring to browse roles only.")
+
+# ---------------------------------------------------------------------------
+# Execution
+# ---------------------------------------------------------------------------
+if run_scout:
+    with st.spinner("Polling job boards across target firms..."):
+        roles = fetch_target_roles()
+
+    if not roles:
+        st.warning(
+            "No matching roles found right now. "
+            "Firms may not be actively posting on Greenhouse or Lever, "
+            "or the board handles need updating in job_scout.py."
+        )
+        st.stop()
+
+    st.success(f"Found {len(roles)} matching role{'s' if len(roles) != 1 else ''} across target firms.")
+
+    if score_toggle and resume_file:
+        with st.spinner(f"Scoring {len(roles)} roles against your resume..."):
+            roles = score_roles_against_resume(roles, resume_file)
+        st.caption("Roles sorted by fit score (highest first).")
     else:
-        try:
-            with st.spinner("Fetching current postings from target firms..."):
-                roles = fetch_target_roles()
-        except Exception as exc:
-            st.error(f"Unable to fetch target roles: {exc}")
-        else:
-            if not roles:
-                st.warning(
-                    "No matching roles were returned. A firm board handle may need updating in job_scout.py."
-                )
+        st.caption("Showing roles without scoring.")
+
+    # ---------------------------------------------------------------------------
+    # Display results
+    # ---------------------------------------------------------------------------
+    for role in roles:
+        score = role.get("score")
+        fit_band = role.get("fit_band", "")
+        score_label = f"{score}% — {fit_band}" if score is not None else fit_band or "Not scored"
+
+        with st.expander(f"**{role['firm']}** · {role['title']} · {role['location']}"):
+            if score is not None:
+                st.metric("Resume Strength", f"{score}%")
+                st.caption(fit_band)
             else:
-                scored_roles = []
-                scoring_error = None
+                st.caption(score_label)
 
-                with st.spinner("Scoring roles against your resume..."):
-                    for role in roles:
-                        description = role.get("description", "")
-                        scored_role = dict(role)
+            if role.get("top_skills"):
+                st.write("**Top Skills Found**")
+                for skill in role["top_skills"]:
+                    st.write(f"- {skill}")
 
-                        if not description or len(description.strip()) < 100:
-                            scored_role["score"] = None
-                            scored_role["fit_band"] = "Insufficient description"
-                            scored_role["top_skills"] = []
-                            scored_role["missing_keywords"] = []
-                            scored_roles.append(scored_role)
-                            continue
+            if role.get("missing_keywords"):
+                st.write("**Missing Keywords**")
+                for kw in role["missing_keywords"]:
+                    st.write(f"- {kw}")
 
-                        try:
-                            resume_file.seek(0)
-                            result = analyze_resume_text_against_job_text(
-                                resume_file,
-                                description,
-                                job_filename=f"{role['firm']}_{role['title'][:40]}.txt",
-                            )
-                            scored_role["score"] = result["resume_strength_score"]
-                            scored_role["fit_band"] = result["fit_band"]
-                            scored_role["top_skills"] = result["top_skills"][:5]
-                            scored_role["missing_keywords"] = result["missing_keywords"][:5]
-                        except (
-                            UnsupportedFileTypeError,
-                            EmptyDocumentError,
-                            FileTooLargeError,
-                        ) as exc:
-                            scoring_error = str(exc)
-                            break
-                        except Exception:
-                            scored_role["score"] = None
-                            scored_role["fit_band"] = "Error during scoring"
-                            scored_role["top_skills"] = []
-                            scored_role["missing_keywords"] = []
+            if role.get("url"):
+                st.markdown(f"[View full job posting →]({role['url']})")
 
-                        scored_roles.append(scored_role)
-
-                if scoring_error:
-                    st.error(scoring_error)
-                else:
-                    scored_roles.sort(key=lambda role: role["score"] or 0, reverse=True)
-                    filtered_roles = [
-                        role for role in scored_roles if (role["score"] or 0) >= minimum_score
-                    ]
-
-                    st.metric("Matching postings", len(filtered_roles))
-                    st.caption(
-                        f"{len(scored_roles)} roles matched your title filters before score filtering."
-                    )
-
-                    if not filtered_roles:
-                        st.info(
-                            "No roles met the minimum score filter. Lower the threshold or update target firm handles."
-                        )
-
-                    for index, role in enumerate(filtered_roles[:max_results], start=1):
-                        header = f"{index}. {role['firm']} | {role['title']}"
-                        with st.expander(header, expanded=index <= 3):
-                            score_text = "N/A" if role["score"] is None else f"{role['score']}%"
-                            st.write(f"Location: {role['location']}")
-                            st.write(f"Source: {role['source']}")
-                            st.write(f"Fit score: {score_text}")
-                            st.write(f"Fit band: {role['fit_band']}")
-
-                            if role.get("url"):
-                                st.link_button("Open role", role["url"])
-
-                            st.write("Top matching signals")
-                            for item in role["top_skills"] or ["No strong overlap found yet."]:
-                                st.write(f"- {item}")
-
-                            st.write("Likely gaps")
-                            for item in role["missing_keywords"] or ["No major keyword gaps found."]:
-                                st.write(f"- {item}")
+            if not score_toggle:
+                preview = role.get("description", "")[:500]
+                if preview:
+                    st.caption(preview + "...")
