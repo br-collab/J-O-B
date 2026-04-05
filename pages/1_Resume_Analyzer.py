@@ -45,6 +45,14 @@ job_file = st.file_uploader(
     key="job",
 )
 
+if resume_file is not None:
+    st.session_state["resume_file"] = resume_file
+if job_file is not None:
+    st.session_state["job_file"] = job_file
+
+resume_file = st.session_state.get("resume_file")
+job_file = st.session_state.get("job_file")
+
 analyze_clicked = st.button("Analyze", type="primary")
 use_openai_enhancement = st.checkbox(
     "Use OpenAI enhancement",
