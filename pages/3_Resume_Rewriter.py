@@ -13,6 +13,7 @@ from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
+from session_store import load_result, load_resume
 
 st.set_page_config(page_title="Resume Rewriter", page_icon="✍️", layout="wide")
 
@@ -23,17 +24,20 @@ st.write(
 )
 
 # ---------------------------------------------------------------------------
-# Gate: require analyzer result in session state
+# Gate: load from disk if session state is empty
 # ---------------------------------------------------------------------------
-result = st.session_state.get("analysis_result")
-resume_file = st.session_state.get("resume_file")
+result = st.session_state.get("analysis_result") or load_result()
+resume_file = st.session_state.get("resume_file") or load_resume()
+
+if result:
+    st.session_state["analysis_result"] = result
+if resume_file:
+    st.session_state["resume_file"] = resume_file
 
 if not result:
     st.warning(
-        "No analysis found in this session. Go to **Resume Analyzer**, "
-        "upload your resume and a job description, click **Analyze**, "
-        "then return here. Note: refreshing the page clears session data — "
-        "keep the analyzer tab open in the same browser session."
+        "No analysis found. Go to **Resume Analyzer**, upload your resume and a job description, "
+        "click **Analyze**, then return here."
     )
     if st.button("Go to Resume Analyzer"):
         st.switch_page("app.py")

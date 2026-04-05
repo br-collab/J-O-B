@@ -4,6 +4,7 @@ import streamlit as st
 
 from analyzer import analyze_documents
 from openai_enhancer import enhance_analysis_with_openai, has_openai_api_key
+from session_store import save_result, save_resume
 from utils import (
     EmptyDocumentError,
     FileTooLargeError,
@@ -46,6 +47,7 @@ job_file = st.file_uploader(
 
 if resume_file is not None:
     st.session_state["resume_file"] = resume_file
+    save_resume(resume_file)
 if job_file is not None:
     st.session_state["job_file"] = job_file
 
@@ -73,6 +75,7 @@ if analyze_clicked:
             st.error(f"Unable to parse uploaded files: {exc}")
         else:
             st.session_state["analysis_result"] = result
+            save_result(result)
             st.success("Documents parsed, preprocessed, and scored successfully.")
             raid_breakdown = result["raid_breakdown"]
             section_scores = result["section_scores"]

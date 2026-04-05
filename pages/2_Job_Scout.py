@@ -8,6 +8,7 @@ against your uploaded resume, and surfaces the best fits.
 import streamlit as st
 
 from job_scout import fetch_target_roles, score_roles_against_resume, TARGET_FIRMS, TARGET_TITLE_KEYWORDS
+from session_store import load_resume as _load_resume
 
 
 st.set_page_config(page_title="Job Scout", page_icon="🔍", layout="centered")
@@ -32,9 +33,11 @@ with st.sidebar:
     st.caption("Edit these in job_scout.py to refine your search.")
 
 # ---------------------------------------------------------------------------
-# Resume upload — check session state first
+# Resume upload — check session state and disk store first
 # ---------------------------------------------------------------------------
-session_resume = st.session_state.get("resume_file")
+session_resume = st.session_state.get("resume_file") or _load_resume()
+if session_resume:
+    st.session_state["resume_file"] = session_resume
 if session_resume:
     st.success(f"Using resume from analyzer session: **{session_resume.name}**")
     resume_file = session_resume
