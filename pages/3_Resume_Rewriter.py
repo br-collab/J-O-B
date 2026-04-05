@@ -328,10 +328,12 @@ st.divider()
 
 def build_docx(summary, experience_drafts, edited_bullets, skills):
     from docx import Document as DocxDocument
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     doc = DocxDocument()
 
+    # Page margins — 1 inch all sides
     for section in doc.sections:
         section.top_margin = Inches(1)
         section.bottom_margin = Inches(1)
@@ -339,37 +341,35 @@ def build_docx(summary, experience_drafts, edited_bullets, skills):
         section.right_margin = Inches(1)
 
     def add_heading(text, level=1):
-        paragraph = doc.add_heading(text, level=level)
-        if paragraph.runs:
-            paragraph.runs[0].font.color.rgb = RGBColor(0x1F, 0x39, 0x64)
-        return paragraph
+        p = doc.add_heading(text, level=level)
+        p.runs[0].font.color.rgb = RGBColor(0x1F, 0x39, 0x64)
+        return p
 
     def add_bullet(text):
-        paragraph = doc.add_paragraph(style="List Bullet")
-        run = paragraph.add_run(text.lstrip("• ").strip())
+        p = doc.add_paragraph(style="List Bullet")
+        p.runs[0].text if p.runs else None
+        run = p.add_run(text.lstrip("• ").strip())
         run.font.size = Pt(11)
-        return paragraph
+        return p
 
     def add_body(text):
-        paragraph = doc.add_paragraph(text)
-        if paragraph.runs:
-            paragraph.runs[0].font.size = Pt(11)
-        return paragraph
+        p = doc.add_paragraph(text)
+        p.runs[0].font.size = Pt(11) if p.runs else None
+        return p
 
+    # Name placeholder
     add_heading("REWRITTEN RESUME", level=1)
 
+    # Summary
     add_heading("Professional Summary", level=2)
     add_body(summary)
 
+    # Experience
     add_heading("Professional Experience", level=2)
     for i, role_draft in enumerate(experience_drafts):
-        role_line = (
-            f"{role_draft.get('role', '')}  |  "
-            f"{role_draft.get('firm', '')}  |  "
-            f"{role_draft.get('dates', '')}"
-        )
-        paragraph = doc.add_paragraph()
-        run = paragraph.add_run(role_line)
+        role_line = f"{role_draft.get('role', '')}  |  {role_draft.get('firm', '')}  |  {role_draft.get('dates', '')}"
+        p = doc.add_paragraph()
+        run = p.add_run(role_line)
         run.bold = True
         run.font.size = Pt(11)
 
@@ -379,13 +379,14 @@ def build_docx(summary, experience_drafts, edited_bullets, skills):
             if clean:
                 add_bullet(clean)
 
+    # Skills
     add_heading("Key Skills & Expertise", level=2)
     add_body(skills)
 
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 try:
