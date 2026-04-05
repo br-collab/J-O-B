@@ -972,10 +972,10 @@ def get_strength_band(score):
 
 def analyze_documents(resume_file, job_file, debug=False):
     resume_meta = extract_text_with_metadata(
-        resume_file, allowed_extensions={"pdf", "docx"}, document_kind="resume"
+        resume_file, allowed_extensions={"pdf", "docx", "txt"}, document_kind="resume"
     )
     job_meta = extract_text_with_metadata(
-        job_file, allowed_extensions={"pdf", "docx"}, document_kind="job_description"
+        job_file, allowed_extensions={"pdf", "docx", "txt"}, document_kind="job_description"
     )
 
     resume_text = resume_meta["cleaned_text"]

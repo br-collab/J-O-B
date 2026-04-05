@@ -322,22 +322,84 @@ if st.button("Score Rewritten Resume", type="secondary"):
             st.error(f"Scoring failed: {exc}")
 
 # ---------------------------------------------------------------------------
-# Download
+# Download as Word document
 # ---------------------------------------------------------------------------
 st.divider()
-download_text = "\n\n".join([
-    edited_summary,
-    *[
-        f"{experience_drafts[i].get('role','')} | {experience_drafts[i].get('firm','')} | {experience_drafts[i].get('dates','')}\n"
-        + edited_bullets.get(i, "")
-        for i in range(len(experience_drafts))
-    ],
-    "KEY SKILLS & EXPERTISE\n" + edited_skills,
-])
 
-st.download_button(
-    label="Download Rewritten Resume (txt)",
-    data=download_text,
-    file_name="rewritten_resume.txt",
-    mime="text/plain",
-)
+def build_docx(summary, experience_drafts, edited_bullets, skills):
+    from docx import Document as DocxDocument
+    from docx.shared import Inches, Pt, RGBColor
+
+    doc = DocxDocument()
+
+    for section in doc.sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+
+    def add_heading(text, level=1):
+        paragraph = doc.add_heading(text, level=level)
+        if paragraph.runs:
+            paragraph.runs[0].font.color.rgb = RGBColor(0x1F, 0x39, 0x64)
+        return paragraph
+
+    def add_bullet(text):
+        paragraph = doc.add_paragraph(style="List Bullet")
+        run = paragraph.add_run(text.lstrip("• ").strip())
+        run.font.size = Pt(11)
+        return paragraph
+
+    def add_body(text):
+        paragraph = doc.add_paragraph(text)
+        if paragraph.runs:
+            paragraph.runs[0].font.size = Pt(11)
+        return paragraph
+
+    add_heading("REWRITTEN RESUME", level=1)
+
+    add_heading("Professional Summary", level=2)
+    add_body(summary)
+
+    add_heading("Professional Experience", level=2)
+    for i, role_draft in enumerate(experience_drafts):
+        role_line = (
+            f"{role_draft.get('role', '')}  |  "
+            f"{role_draft.get('firm', '')}  |  "
+            f"{role_draft.get('dates', '')}"
+        )
+        paragraph = doc.add_paragraph()
+        run = paragraph.add_run(role_line)
+        run.bold = True
+        run.font.size = Pt(11)
+
+        bullets_raw = edited_bullets.get(i, "")
+        for line in bullets_raw.splitlines():
+            clean = line.strip().lstrip("•").strip()
+            if clean:
+                add_bullet(clean)
+
+    add_heading("Key Skills & Expertise", level=2)
+    add_body(skills)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+try:
+    docx_bytes = build_docx(
+        summary=edited_summary,
+        experience_drafts=experience_drafts,
+        edited_bullets=edited_bullets,
+        skills=edited_skills,
+    )
+    st.download_button(
+        label="Download Rewritten Resume (.docx)",
+        data=docx_bytes,
+        file_name="rewritten_resume.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+except Exception as exc:
+    st.error(f"Word export failed: {exc}")

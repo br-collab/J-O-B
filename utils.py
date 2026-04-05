@@ -299,6 +299,11 @@ def read_text_from_upload(uploaded_file, allowed_extensions):
         return extract_text_from_docx(uploaded_file)
     if extension == "pdf":
         return extract_text_from_pdf(uploaded_file)
+    if extension == "txt":
+        uploaded_file.seek(0)
+        text = uploaded_file.read().decode("utf-8", errors="ignore")
+        uploaded_file.seek(0)
+        return text
     raise UnsupportedFileTypeError(f"Unsupported file type '.{extension}'.")
 
 
