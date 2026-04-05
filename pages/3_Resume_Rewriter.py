@@ -223,16 +223,18 @@ for i, role_draft in enumerate(experience_drafts):
         st.text_area(
             "Original",
             value=original_block or "(see original resume)",
-            height=180,
+            height=200,
             disabled=True,
             key=f"orig_role_{i}",
         )
     with cr:
+        intro_text = role_draft.get("intro", "")
         bullets_text = "\n".join(f"• {b}" for b in role_draft.get("bullets", []))
+        combined = f"{intro_text}\n{bullets_text}".strip() if intro_text else bullets_text
         edited = st.text_area(
             "Rewritten (edit freely)",
-            value=bullets_text,
-            height=180,
+            value=combined,
+            height=200,
             key=f"edit_role_{i}",
         )
         edited_bullets[i] = edited
@@ -258,6 +260,57 @@ with cr:
         value=draft.get("skills", ""),
         height=120,
         key="edit_skills",
+    )
+
+# ---------------------------------------------------------------------------
+# Education
+# ---------------------------------------------------------------------------
+st.divider()
+st.markdown("### Education")
+cl, cr = st.columns(2)
+
+original_edu = ""
+for j, line in enumerate(resume_lines):
+    if "education" in line.lower():
+        original_edu = "\n".join(resume_lines[j:j+6]).strip()
+        break
+
+edu_draft = draft.get("education", [])
+edu_value = "\n".join(edu_draft) if isinstance(edu_draft, list) else edu_draft
+
+with cl:
+    st.text_area("Original", value=original_edu or "(see resume)", height=100, disabled=True, key="orig_edu")
+with cr:
+    edited_edu = st.text_area(
+        "Rewritten (edit freely)",
+        value=edu_value or original_edu,
+        height=100,
+        key="edit_edu",
+    )
+
+# ---------------------------------------------------------------------------
+# Certifications
+# ---------------------------------------------------------------------------
+st.divider()
+st.markdown("### Certifications & Professional Development")
+cl, cr = st.columns(2)
+
+original_certs = ""
+for j, line in enumerate(resume_lines):
+    if any(w in line.lower() for w in ("certif", "license", "professional development")):
+        original_certs = "\n".join(resume_lines[j:j+6]).strip()
+        break
+
+certs_draft = draft.get("certifications", "")
+
+with cl:
+    st.text_area("Original", value=original_certs or "(see resume)", height=100, disabled=True, key="orig_certs")
+with cr:
+    edited_certs = st.text_area(
+        "Rewritten (edit freely)",
+        value=certs_draft or original_certs,
+        height=100,
+        key="edit_certs",
     )
 
 # ---------------------------------------------------------------------------
@@ -328,7 +381,8 @@ if st.button("Score Rewritten Resume", type="secondary"):
 # ---------------------------------------------------------------------------
 st.divider()
 
-def build_docx(summary, experience_drafts, edited_bullets, skills, resume_text=""):
+def build_docx(summary, experience_drafts, edited_bullets, skills,
+               education="", certifications="", resume_text=""):
     from docx import Document as DocxDocument
     from docx.shared import Pt, Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -378,6 +432,11 @@ def build_docx(summary, experience_drafts, edited_bullets, skills, resume_text="
         _set_run(r2, italic=True)
         r3 = p.add_run(f"\t{dates}")
         _set_run(r3)
+
+    def _intro(text):
+        p = doc.add_paragraph()
+        _set_spacing(p, before=20, after=0, line=218)
+        _set_run(p.add_run(text), italic=True)
 
     def _bullet(text):
         p = doc.add_paragraph(style="List Bullet")
@@ -439,19 +498,40 @@ def build_docx(summary, experience_drafts, edited_bullets, skills, resume_text="
             role_draft.get("firm", ""),
             role_draft.get("dates", ""),
         )
+        raw_block = edited_bullets.get(i, "")
+        intro_line = ""
+        bullet_lines = []
+        for line in raw_block.splitlines():
+            clean = line.strip()
+            if clean.startswith("•"):
+                bullet_lines.append(clean.lstrip("•").strip())
+            elif clean and not bullet_lines:
+                intro_line = clean
+            elif clean:
+                bullet_lines.append(clean)
 
-        bullets_raw = edited_bullets.get(i, "")
-        for line in bullets_raw.splitlines():
-            clean = line.strip().lstrip("•").strip()
-            if clean:
-                _bullet(clean)
+        if intro_line:
+            _intro(intro_line)
+        for bullet in bullet_lines:
+            if bullet:
+                _bullet(bullet)
         if i < len(experience_drafts) - 1:
-            _body("", before=50)
+            _body("", before=40)
 
     _page_break()
 
     _section_header("Key Skills & Expertise")
     _body(skills, before=30)
+
+    if education:
+        _section_header("Education")
+        for line in (education.splitlines() if isinstance(education, str) else education):
+            if line.strip():
+                _body(line.strip(), before=30)
+
+    if certifications:
+        _section_header("Licenses, Certifications & Professional Development")
+        _body(certifications, before=30)
 
     buf = BytesIO()
     doc.save(buf)
@@ -465,6 +545,8 @@ try:
         experience_drafts=experience_drafts,
         edited_bullets=edited_bullets,
         skills=edited_skills,
+        education=edited_edu,
+        certifications=edited_certs,
         resume_text=result.get("resume_text", ""),
     )
     st.download_button(
