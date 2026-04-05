@@ -290,7 +290,7 @@ if st.button("Score Rewritten Resume", type="secondary"):
     with st.spinner("Scoring rewritten resume..."):
         try:
             jd_fake = _make_text_file(
-                result.get("job_filename", "jd.txt"),
+                "jd.txt",
                 result.get("job_text", ""),
             )
             resume_fake = _make_text_file("rewritten_resume.txt", "\n".join(parts))
