@@ -21,15 +21,17 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 TARGET_FIRMS: list[dict[str, str]] = [
-    {"name": "BlackRock",     "handle": "blackrock",       "api": "greenhouse"},
-    {"name": "American Express", "handle": "americanexpress", "api": "greenhouse"},
-    {"name": "AT&T",          "handle": "att",             "api": "greenhouse"},
-    {"name": "JPMorgan Chase","handle": "jpmorgan",        "api": "greenhouse"},
-    {"name": "Goldman Sachs", "handle": "goldmansachs",    "api": "greenhouse"},
-    {"name": "Morgan Stanley","handle": "morganstanley",   "api": "greenhouse"},
-    {"name": "Citigroup",     "handle": "citi",            "api": "greenhouse"},
-    {"name": "McKinsey",      "handle": "mckinsey",        "api": "lever"},
-    {"name": "BCG",           "handle": "bcg",             "api": "lever"},
+    {"name": "BlackRock",        "handle": "blackrock",        "api": "greenhouse"},
+    {"name": "American Express", "handle": "americanexpress",  "api": "greenhouse"},
+    {"name": "AT&T",             "handle": "att",              "api": "greenhouse"},
+    {"name": "JPMorgan Chase",   "handle": "jpmorgan",         "api": "greenhouse"},
+    {"name": "Goldman Sachs",    "handle": "goldmansachs",     "api": "greenhouse"},
+    {"name": "Morgan Stanley",   "handle": "morganstanley",    "api": "greenhouse"},
+    {"name": "Citigroup",        "handle": "citi",             "api": "greenhouse"},
+    {"name": "McKinsey",         "handle": "mckinsey",         "api": "lever"},
+    {"name": "BCG",              "handle": "bcg",              "api": "lever"},
+    # Note: PIMCO, Vanguard, Fidelity use Workday — not Greenhouse/Lever.
+    # To scout those, download their JD PDFs manually and use the Resume Analyzer tab directly.
 ]
 
 # ---------------------------------------------------------------------------
@@ -149,7 +151,21 @@ def score_roles_against_resume(
     resume_file: a Streamlit UploadedFile (or any file-like with .name, .read(), .seek()).
     Returns roles sorted by fit score descending.
     """
-    from analyzer import analyze_resume_text_against_job_text
+    from io import BytesIO
+    from analyzer import analyze_documents
+
+    class _FakeFile:
+        """Wrap plain text as a minimal file-like object the analyzer can read."""
+        def __init__(self, name: str, content: str):
+            self.name = name
+            self._buf = BytesIO(content.encode("utf-8"))
+            self.size = len(content.encode("utf-8"))
+
+        def read(self):
+            return self._buf.read()
+
+        def seek(self, pos):
+            return self._buf.seek(pos)
 
     scored = []
     for role in roles:
@@ -164,11 +180,11 @@ def score_roles_against_resume(
 
         try:
             resume_file.seek(0)
-            result = analyze_resume_text_against_job_text(
-                resume_file,
-                description,
-                job_filename=f"{role['firm']}_{role['title'][:40]}.txt",
+            jd_file = _FakeFile(
+                name=f"{role['firm']}_{role['title'][:40]}.txt",
+                content=description,
             )
+            result = analyze_documents(resume_file, jd_file)
             role["score"] = result["resume_strength_score"]
             role["fit_band"] = result["fit_band"]
             role["top_skills"] = result["top_skills"][:5]

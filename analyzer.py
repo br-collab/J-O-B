@@ -99,37 +99,51 @@ PHRASE_LIBRARY = {
     "cross functional",
     "data analytics",
     "decision briefings",
+    "decision ready",
+    "enterprise transformation",
+    "enterprise wide transformation",
     "executive director",
     "executive materials",
     "executive reporting",
     "executive updates",
     "financial oversight",
+    "forward deployed",
     "governance rhythm",
     "headcount management",
+    "implementation governance",
     "institutional clients",
     "institutional custody",
     "internal governance",
+    "investment management",
     "investment banking",
     "kpi reporting",
     "leadership routines",
     "liquidity management",
+    "machine learning",
     "matrixed organizations",
     "operating cadence",
     "operating governance",
     "operating lead",
     "operating model",
     "portfolio analytics",
+    "prioritization framework",
     "qbrs",
     "regulatory reporting",
     "resource planning",
+    "roi modeling",
     "stakeholder alignment",
     "stakeholder coordination",
     "stakeholder management",
     "status reporting",
     "strategic advisor",
+    "strategic change",
+    "systematic change",
+    "target operating model",
     "treasury operations",
     "trusted advisor",
+    "workflow automation",
     "workflow transformation",
+    "value creation",
 }
 
 NGRAM_CONTEXT_TERMS = {
@@ -168,6 +182,16 @@ TRANSLATION_MAP = {
     "governance": {"control framework", "operating governance", "decision governance"},
     "stakeholder coordination": {"stakeholder management", "stakeholder alignment", "cross functional"},
     "ai enabled solutions": {"ai governance", "workflow transformation", "data analytics"},
+    "forward deployed": {"principal consultant", "implementation governance", "strategic advisor"},
+    "enterprise transformation": {"platform transformation", "workflow transformation", "operating model"},
+    "systematic change": {"enterprise transformation", "operating model", "workflow transformation"},
+    "strategic change": {"transformation", "operating model", "strategic advisor"},
+    "target operating model": {"operating model", "implementation governance", "workflow transformation"},
+    "workflow automation": {"ai enabled solutions", "intelligent document processing", "workflow transformation"},
+    "principal consultant": {"forward deployed", "strategic advisor", "trusted advisor"},
+    "implementation governance": {"control framework", "operating governance", "enterprise transformation"},
+    "decision ready": {"executive materials", "decision briefings", "executive reporting"},
+    "roi modeling": {"financial oversight", "kpi reporting", "value creation"},
 }
 
 ROLE_BUCKETS = {
@@ -946,15 +970,16 @@ def get_strength_band(score):
     return "Needs stronger targeting"
 
 
-def _build_analysis_result(
-    resume_filename,
-    job_filename,
-    resume_text,
-    job_text,
-    debug=False,
-    job_removed_noise_terms=None,
-):
-    job_removed_noise_terms = job_removed_noise_terms or []
+def analyze_documents(resume_file, job_file, debug=False):
+    resume_meta = extract_text_with_metadata(
+        resume_file, allowed_extensions={"pdf", "docx"}, document_kind="resume"
+    )
+    job_meta = extract_text_with_metadata(
+        job_file, allowed_extensions={"pdf", "docx"}, document_kind="job_description"
+    )
+
+    resume_text = resume_meta["cleaned_text"]
+    job_text = job_meta["cleaned_text"]
 
     resume_preprocessed = preprocess_text(resume_text)
     job_preprocessed = preprocess_text(job_text)
@@ -1079,8 +1104,8 @@ def _build_analysis_result(
 
     result = {
         "status": "scored",
-        "resume_filename": resume_filename,
-        "job_filename": job_filename,
+        "resume_filename": resume_file.name,
+        "job_filename": job_file.name,
         "resume_text": resume_text,
         "job_text": job_text,
         "resume_cleaned_text": resume_preprocessed["cleaned_text"],
@@ -1123,7 +1148,7 @@ def _build_analysis_result(
         result["debug"] = {
             "section_detection": section_detection,
             "detected_sections": list(resume_sections.keys()),
-            "job_removed_noise_terms": job_removed_noise_terms,
+            "job_removed_noise_terms": job_meta["removed_noise_terms"],
             "job_removed_noise_tokens": job_preprocessed["removed_noise_tokens"],
             "job_sections": job_sections,
             "job_focus_text_preview": job_focus_text[:2000],
@@ -1138,45 +1163,3 @@ def _build_analysis_result(
         }
 
     return result
-
-
-def analyze_documents(resume_file, job_file, debug=False):
-    resume_meta = extract_text_with_metadata(
-        resume_file, allowed_extensions={"pdf", "docx"}, document_kind="resume"
-    )
-    job_meta = extract_text_with_metadata(
-        job_file, allowed_extensions={"pdf", "docx"}, document_kind="job_description"
-    )
-
-    return _build_analysis_result(
-        resume_filename=resume_file.name,
-        job_filename=job_file.name,
-        resume_text=resume_meta["cleaned_text"],
-        job_text=job_meta["cleaned_text"],
-        debug=debug,
-        job_removed_noise_terms=job_meta["removed_noise_terms"],
-    )
-
-
-def analyze_resume_text_against_job_text(
-    resume_file,
-    job_text,
-    job_filename="job_description.txt",
-    debug=False,
-):
-    resume_meta = extract_text_with_metadata(
-        resume_file, allowed_extensions={"pdf", "docx"}, document_kind="resume"
-    )
-
-    cleaned_job_text = str(job_text or "").strip()
-    if not cleaned_job_text:
-        raise ValueError("Job description text is empty.")
-
-    return _build_analysis_result(
-        resume_filename=resume_file.name,
-        job_filename=job_filename,
-        resume_text=resume_meta["cleaned_text"],
-        job_text=cleaned_job_text,
-        debug=debug,
-        job_removed_noise_terms=[],
-    )
