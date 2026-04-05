@@ -144,6 +144,11 @@ def rewrite_resume(
     if raw.startswith("```"):
         raw = raw.strip("`").replace("json", "", 1).strip()
 
+    # Strip control characters that break json.loads
+    # Keep tabs and newlines (valid in JSON strings), remove everything else below 0x20
+    import re
+    raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', raw)
+
     parsed = json.loads(raw)
 
     for key in ("summary", "experience", "skills", "education", "certifications", "grounding_notes"):
