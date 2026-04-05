@@ -1,0 +1,14 @@
+.streamlit/secrets.toml
+.venv/
+__pycache__/
+*.pyc
+resume-analyzer.zip
+taxonomy/taxonomy_library.json
+taxonomy/README.md
+logs/*.jsonl
+logs/*.log
+logs/*.md
+Test Files/
+Resume Writer/
+sample_files/
+scripts/
