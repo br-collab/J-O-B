@@ -13,7 +13,6 @@ from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
-from session_store import load_result, load_resume
 
 st.set_page_config(page_title="Resume Rewriter", page_icon="✍️", layout="wide")
 
@@ -24,8 +23,12 @@ st.write(
 )
 
 # ---------------------------------------------------------------------------
-# Gate: load from disk if session state is empty
+# Gate: load from disk if session state is empty (survives page navigation)
 # ---------------------------------------------------------------------------
+from session_store import load_result, load_resume
+from resume_rewriter import rewrite_resume
+from analyzer import analyze_documents
+
 result = st.session_state.get("analysis_result") or load_result()
 resume_file = st.session_state.get("resume_file") or load_resume()
 
@@ -70,9 +73,6 @@ if not openai_key:
 # ---------------------------------------------------------------------------
 # Generate or iterate rewrite
 # ---------------------------------------------------------------------------
-from resume_rewriter import rewrite_resume
-from analyzer import analyze_documents
-
 draft_key = "rewrite_draft"
 feedback_key = "rewrite_feedback"
 
@@ -257,28 +257,19 @@ if st.button("Score Rewritten Resume", type="secondary"):
             self.name = name
             self._buf = BytesIO(content.encode("utf-8"))
             self.size = len(content.encode("utf-8"))
-
-        def read(self):
-            return self._buf.read()
-
-        def seek(self, p):
-            return self._buf.seek(p)
+        def read(self): return self._buf.read()
+        def seek(self, p): return self._buf.seek(p)
 
     class _FakePDFFile:
         """Wraps the original resume bytes so the scorer can re-read it."""
-
         def __init__(self, original_file):
             self.name = original_file.name
             original_file.seek(0)
             self._data = original_file.read()
             self.size = len(self._data)
             self._buf = BytesIO(self._data)
-
-        def read(self):
-            return self._buf.read()
-
-        def seek(self, p):
-            return self._buf.seek(p)
+        def read(self): return self._buf.read()
+        def seek(self, p): return self._buf.seek(p)
 
     with st.spinner("Scoring rewritten resume..."):
         try:
