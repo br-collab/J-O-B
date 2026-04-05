@@ -1,152 +1,202 @@
 """
 pages/3_Resume_Rewriter.py
 
-Resume Rewriter tab.
-- Runs after the analyzer has scored a resume + JD pair.
-- Sends original resume text + analyzer findings to OpenAI.
-- Shows side-by-side: original vs rewritten, section by section.
-- User accepts, rejects, or gives feedback on each section.
-- Iterates until satisfied, then scores the rewrite automatically.
+Self-contained Resume Rewriter.
+Upload resume + JD here directly. Runs the analyzer internally,
+then sends results to OpenAI for a grounded section-by-section rewrite.
+Side-by-side preview with inline editing and feedback loop.
+Score the rewrite when ready.
 """
 
 from io import BytesIO
-from pathlib import Path
+import os
 
 import streamlit as st
+
+from analyzer import analyze_documents
+from resume_rewriter import rewrite_resume
+from utils import EmptyDocumentError, FileTooLargeError, UnsupportedFileTypeError
 
 st.set_page_config(page_title="Resume Rewriter", page_icon="✍️", layout="wide")
 
 st.title("Resume Rewriter")
 st.write(
-    "Run the Resume Analyzer first, then come here to generate a targeted rewrite "
-    "grounded strictly in your actual experience."
-)
-
-# ---------------------------------------------------------------------------
-# Gate: load from disk if session state is empty (survives page navigation)
-# ---------------------------------------------------------------------------
-from session_store import load_result, load_resume
-from resume_rewriter import rewrite_resume
-from analyzer import analyze_documents
-
-result = st.session_state.get("analysis_result") or load_result()
-resume_file = st.session_state.get("resume_file") or load_resume()
-
-if result:
-    st.session_state["analysis_result"] = result
-if resume_file:
-    st.session_state["resume_file"] = resume_file
-
-if not result:
-    st.warning(
-        "No analysis found. Go to **Resume Analyzer**, upload your resume and a job description, "
-        "click **Analyze**, then return here."
-    )
-    if st.button("Go to Resume Analyzer"):
-        st.switch_page("app.py")
-    st.stop()
-
-resume_text = result.get("resume_text", "")
-job_title = result.get("job_sections", {}).get("title", "Target Role")
-current_score = result.get("resume_strength_score", 0)
-
-st.info(
-    f"Loaded analysis for **{result.get('resume_filename', 'your resume')}** "
-    f"vs **{result.get('job_filename', 'job description')}** — "
-    f"current score: **{current_score}%**"
+    "Upload your resume and a job description. "
+    "The analyzer scores the pair, then OpenAI rewrites your resume "
+    "to close the gap — grounded strictly to your actual experience."
 )
 
 # ---------------------------------------------------------------------------
 # OpenAI key check
 # ---------------------------------------------------------------------------
-try:
-    import streamlit as st_check
-    openai_key = st_check.secrets.get("OPENAI_API_KEY", "")
-except Exception:
-    import os
-    openai_key = os.getenv("OPENAI_API_KEY", "")
+openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+if not openai_key:
+    try:
+        openai_key = st.secrets.get("OPENAI_API_KEY", "").strip()
+    except Exception:
+        openai_key = ""
 
 if not openai_key:
     st.error("OpenAI API key not found. Add it in Streamlit Cloud → Settings → Secrets.")
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Generate or iterate rewrite
+# File uploads
 # ---------------------------------------------------------------------------
-draft_key = "rewrite_draft"
-feedback_key = "rewrite_feedback"
+col_a, col_b = st.columns(2)
+with col_a:
+    resume_file = st.file_uploader(
+        "Upload Resume (.pdf, .docx)",
+        type=["pdf", "docx"],
+        key="rw_resume",
+    )
+with col_b:
+    job_file = st.file_uploader(
+        "Upload Job Description (.pdf, .docx)",
+        type=["pdf", "docx"],
+        key="rw_job",
+    )
 
-if draft_key not in st.session_state:
-    st.session_state[draft_key] = None
-if feedback_key not in st.session_state:
-    st.session_state[feedback_key] = {}
+if resume_file:
+    resume_file.seek(0)
+    st.session_state["rw_resume_bytes"] = resume_file.read()
+    st.session_state["rw_resume_name"] = resume_file.name
+    resume_file.seek(0)
 
-col_left, col_right = st.columns(2)
-with col_left:
-    st.subheader("Original")
-with col_right:
-    st.subheader("Rewritten")
+if job_file:
+    job_file.seek(0)
+    st.session_state["rw_job_bytes"] = job_file.read()
+    st.session_state["rw_job_name"] = job_file.name
+    job_file.seek(0)
+
+
+class _FakeFile:
+    def __init__(self, name, data):
+        self.name = name
+        self.size = len(data)
+        self._buf = BytesIO(data)
+
+    def read(self):
+        return self._buf.read()
+
+    def seek(self, p):
+        return self._buf.seek(p)
+
+
+def _make_text_file(name, text):
+    return _FakeFile(name, text.encode("utf-8"))
+
+
+active_resume = None
+active_job = None
+
+if st.session_state.get("rw_resume_bytes"):
+    active_resume = _FakeFile(
+        st.session_state["rw_resume_name"],
+        st.session_state["rw_resume_bytes"],
+    )
+if st.session_state.get("rw_job_bytes"):
+    active_job = _FakeFile(
+        st.session_state["rw_job_name"],
+        st.session_state["rw_job_bytes"],
+    )
 
 # ---------------------------------------------------------------------------
-# Generate button
+# Controls
 # ---------------------------------------------------------------------------
+ready = bool(active_resume and active_job)
+
 user_feedback_input = st.text_area(
-    "Feedback for next draft (optional — leave blank for first run)",
-    placeholder="e.g. Make the summary shorter. Keep the Army bullet exactly as written. "
-                "The Computershare role needs stronger outcome language.",
+    "Feedback for the rewrite (optional on first run)",
+    placeholder=(
+        "e.g. Keep the Army bullet exactly as written. "
+        "Strengthen the Computershare outcome language. "
+        "Make the summary shorter and more direct."
+    ),
     height=80,
-    key="feedback_input",
+    key="rw_feedback",
 )
 
-generate_label = "Generate Rewrite" if not st.session_state[draft_key] else "Regenerate with Feedback"
-if st.button(generate_label, type="primary"):
-    with st.spinner("Rewriting resume — grounded strictly to your original experience..."):
+has_draft = bool(st.session_state.get("rw_draft"))
+btn_label = "Generate Rewrite" if not has_draft else "Regenerate with Feedback"
+run_clicked = st.button(btn_label, type="primary", disabled=not ready)
+
+if not ready:
+    st.caption("Upload both files above to enable the rewriter.")
+
+# ---------------------------------------------------------------------------
+# Run analysis + rewrite
+# ---------------------------------------------------------------------------
+if run_clicked and active_resume and active_job:
+    with st.spinner("Analyzing resume against job description..."):
+        try:
+            result = analyze_documents(active_resume, active_job)
+            st.session_state["rw_result"] = result
+            st.session_state["rw_baseline_score"] = result["resume_strength_score"]
+        except (UnsupportedFileTypeError, EmptyDocumentError, FileTooLargeError) as exc:
+            st.error(str(exc))
+            st.stop()
+        except Exception as exc:
+            st.error(f"Analysis failed: {exc}")
+            st.stop()
+
+    score = result["resume_strength_score"]
+    st.info(f"Baseline score: **{score}%** — {result['fit_band']}. Generating rewrite...")
+
+    with st.spinner("Rewriting — grounded strictly to your original experience..."):
         try:
             draft = rewrite_resume(
-                resume_text=resume_text,
+                resume_text=result["resume_text"],
                 analysis_result=result,
                 user_feedback=user_feedback_input,
             )
-            st.session_state[draft_key] = draft
+            st.session_state["rw_draft"] = draft
         except Exception as exc:
             st.error(f"Rewrite failed: {exc}")
             st.stop()
 
-draft = st.session_state[draft_key]
+# ---------------------------------------------------------------------------
+# Show draft
+# ---------------------------------------------------------------------------
+draft = st.session_state.get("rw_draft")
+result = st.session_state.get("rw_result")
+current_score = st.session_state.get("rw_baseline_score", 0)
 
-if not draft:
-    st.caption("Click **Generate Rewrite** to produce the first draft.")
+if not draft or not result:
     st.stop()
 
+resume_text = result.get("resume_text", "")
+resume_lines = resume_text.splitlines()
+
+st.success(f"Rewrite ready. Baseline: **{current_score}%**. Edit any section, then score.")
+
 # ---------------------------------------------------------------------------
-# Summary section
+# Summary
 # ---------------------------------------------------------------------------
 st.divider()
 st.markdown("### Professional Summary")
-col_left, col_right = st.columns(2)
+cl, cr = st.columns(2)
 
 original_summary = ""
-resume_lines = resume_text.splitlines()
 for i, line in enumerate(resume_lines):
     if "summary" in line.lower() or "profile" in line.lower():
-        original_summary = "\n".join(resume_lines[i+1:i+6]).strip()
+        original_summary = "\n".join(resume_lines[i + 1 : i + 6]).strip()
         break
 if not original_summary:
-    original_summary = "\n".join(resume_lines[:4]).strip()
+    original_summary = "\n".join(resume_lines[:5]).strip()
 
-with col_left:
-    st.text_area("Original summary", value=original_summary, height=140, disabled=True, key="orig_summary")
-
-with col_right:
+with cl:
+    st.text_area("Original", value=original_summary, height=150, disabled=True, key="orig_summary")
+with cr:
     edited_summary = st.text_area(
-        "Rewritten summary (edit freely)",
+        "Rewritten (edit freely)",
         value=draft.get("summary", ""),
-        height=140,
+        height=150,
         key="edit_summary",
     )
 
 # ---------------------------------------------------------------------------
-# Experience sections
+# Experience
 # ---------------------------------------------------------------------------
 st.divider()
 st.markdown("### Experience")
@@ -155,171 +205,131 @@ experience_drafts = draft.get("experience", [])
 edited_bullets = {}
 
 for i, role_draft in enumerate(experience_drafts):
-    role_label = f"{role_draft.get('role', '')} — {role_draft.get('firm', '')} ({role_draft.get('dates', '')})"
-    st.markdown(f"**{role_label}**")
+    st.markdown(
+        f"**{role_draft.get('role', '')}** — "
+        f"{role_draft.get('firm', '')} "
+        f"({role_draft.get('dates', '')})"
+    )
+    cl, cr = st.columns(2)
 
-    col_left, col_right = st.columns(2)
-
-    # Find original bullets for this role from resume text
+    firm_key = role_draft.get("firm", "").lower()[:8]
     original_block = ""
-    firm = role_draft.get("firm", "").lower()
     for j, line in enumerate(resume_lines):
-        if firm and firm[:8] in line.lower():
-            original_block = "\n".join(resume_lines[j:j+8]).strip()
+        if firm_key and firm_key in line.lower():
+            original_block = "\n".join(resume_lines[j : j + 8]).strip()
             break
 
-    with col_left:
+    with cl:
         st.text_area(
             "Original",
             value=original_block or "(see original resume)",
-            height=160,
+            height=180,
             disabled=True,
             key=f"orig_role_{i}",
         )
-
-    with col_right:
+    with cr:
         bullets_text = "\n".join(f"• {b}" for b in role_draft.get("bullets", []))
         edited = st.text_area(
             "Rewritten (edit freely)",
             value=bullets_text,
-            height=160,
+            height=180,
             key=f"edit_role_{i}",
         )
         edited_bullets[i] = edited
 
 # ---------------------------------------------------------------------------
-# Skills section
+# Skills
 # ---------------------------------------------------------------------------
 st.divider()
 st.markdown("### Skills")
-col_left, col_right = st.columns(2)
+cl, cr = st.columns(2)
 
 original_skills = ""
 for j, line in enumerate(resume_lines):
-    if "skill" in line.lower() or "expertise" in line.lower() or "competenc" in line.lower():
-        original_skills = "\n".join(resume_lines[j:j+6]).strip()
+    if any(w in line.lower() for w in ("skill", "expertise", "competenc")):
+        original_skills = "\n".join(resume_lines[j : j + 6]).strip()
         break
 
-with col_left:
-    st.text_area("Original skills", value=original_skills or "(see original resume)", height=120, disabled=True, key="orig_skills")
-
-with col_right:
+with cl:
+    st.text_area("Original", value=original_skills or "(see resume)", height=120, disabled=True, key="orig_skills")
+with cr:
     edited_skills = st.text_area(
-        "Rewritten skills (edit freely)",
+        "Rewritten (edit freely)",
         value=draft.get("skills", ""),
         height=120,
         key="edit_skills",
     )
 
 # ---------------------------------------------------------------------------
-# Grounding notes — transparency on what was reframed and why
+# Grounding notes
 # ---------------------------------------------------------------------------
 st.divider()
 with st.expander("Grounding notes — what was reframed and why"):
-    notes = draft.get("grounding_notes", [])
-    if notes:
-        for note in notes:
-            st.write(f"- {note}")
-    else:
-        st.write("No grounding notes returned.")
+    for note in draft.get("grounding_notes", []) or ["No grounding notes returned."]:
+        st.write(f"- {note}")
 
 # ---------------------------------------------------------------------------
-# Re-score the rewrite
+# Score the rewrite
 # ---------------------------------------------------------------------------
 st.divider()
 st.markdown("### Score the Rewrite")
-st.caption(
-    "Assemble your edited sections into a single text block and score it against the same JD "
-    "to see the new estimate."
-)
 
 if st.button("Score Rewritten Resume", type="secondary"):
-    assembled_parts = [edited_summary, ""]
-
+    parts = [edited_summary, ""]
     for i, role_draft in enumerate(experience_drafts):
-        assembled_parts.append(
-            f"{role_draft.get('role', '')} | {role_draft.get('firm', '')} | {role_draft.get('dates', '')}"
+        parts.append(
+            f"{role_draft.get('role','')} | {role_draft.get('firm','')} | {role_draft.get('dates','')}"
         )
-        bullets_raw = edited_bullets.get(i, "")
-        for line in bullets_raw.splitlines():
+        for line in edited_bullets.get(i, "").splitlines():
             clean = line.strip().lstrip("•").strip()
             if clean:
-                assembled_parts.append(f"• {clean}")
-        assembled_parts.append("")
-
-    assembled_parts.append("KEY SKILLS & EXPERTISE")
-    assembled_parts.append(edited_skills)
-
-    assembled_text = "\n".join(assembled_parts)
-
-    class _FakeFile:
-        def __init__(self, name, content):
-            self.name = name
-            self._buf = BytesIO(content.encode("utf-8"))
-            self.size = len(content.encode("utf-8"))
-        def read(self): return self._buf.read()
-        def seek(self, p): return self._buf.seek(p)
-
-    class _FakePDFFile:
-        """Wraps the original resume bytes so the scorer can re-read it."""
-        def __init__(self, original_file):
-            self.name = original_file.name
-            original_file.seek(0)
-            self._data = original_file.read()
-            self.size = len(self._data)
-            self._buf = BytesIO(self._data)
-        def read(self): return self._buf.read()
-        def seek(self, p): return self._buf.seek(p)
+                parts.append(f"• {clean}")
+        parts.append("")
+    parts += ["KEY SKILLS & EXPERTISE", edited_skills]
 
     with st.spinner("Scoring rewritten resume..."):
         try:
-            jd_fake = _FakeFile(
-                name=result.get("job_filename", "jd.txt"),
-                content=result.get("job_text", ""),
+            jd_fake = _make_text_file(
+                result.get("job_filename", "jd.txt"),
+                result.get("job_text", ""),
             )
-            resume_fake = _FakeFile(
-                name="rewritten_resume.txt",
-                content=assembled_text,
-            )
-            # Score rewritten text vs original JD text
+            resume_fake = _make_text_file("rewritten_resume.txt", "\n".join(parts))
             rescore = analyze_documents(resume_fake, jd_fake)
             new_score = rescore["resume_strength_score"]
             delta = new_score - current_score
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
+            c1, c2, c3 = st.columns(3)
+            with c1:
                 st.metric("Original Score", f"{current_score}%")
-            with col2:
+            with c2:
                 st.metric("Rewritten Score", f"{new_score}%", delta=f"{delta:+}%")
-            with col3:
+            with c3:
                 st.metric("Fit Band", rescore["fit_band"])
 
             if new_score >= 90:
-                st.success("Target reached. Resume is strongly aligned with the role.")
+                st.success("Target reached. Resume is strongly aligned with this role.")
             elif new_score >= 80:
-                st.info("Strong improvement. Review grounding notes and refine further if needed.")
+                st.info("Strong. Add feedback above and regenerate to push further.")
             else:
-                st.warning(
-                    "Score improved but still below 90%. Review the missing keywords section "
-                    "and add feedback above, then regenerate."
-                )
+                st.warning("Still below 90%. Add feedback and regenerate.")
 
-            st.write("**Remaining missing keywords:**")
-            for kw in rescore.get("missing_keywords", []):
-                st.write(f"- {kw}")
+            if rescore.get("missing_keywords"):
+                st.write("**Remaining missing keywords:**")
+                for kw in rescore["missing_keywords"]:
+                    st.write(f"- {kw}")
 
         except Exception as exc:
             st.error(f"Scoring failed: {exc}")
 
 # ---------------------------------------------------------------------------
-# Download rewritten resume as plain text
+# Download
 # ---------------------------------------------------------------------------
 st.divider()
-assembled_download = "\n\n".join([
+download_text = "\n\n".join([
     edited_summary,
     *[
-        f"{experience_drafts[i].get('role', '')} | {experience_drafts[i].get('firm', '')} | {experience_drafts[i].get('dates', '')}\n" +
-        edited_bullets.get(i, "")
+        f"{experience_drafts[i].get('role','')} | {experience_drafts[i].get('firm','')} | {experience_drafts[i].get('dates','')}\n"
+        + edited_bullets.get(i, "")
         for i in range(len(experience_drafts))
     ],
     "KEY SKILLS & EXPERTISE\n" + edited_skills,
@@ -327,7 +337,7 @@ assembled_download = "\n\n".join([
 
 st.download_button(
     label="Download Rewritten Resume (txt)",
-    data=assembled_download,
+    data=download_text,
     file_name="rewritten_resume.txt",
     mime="text/plain",
 )
