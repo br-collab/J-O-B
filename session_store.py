@@ -2,51 +2,114 @@
 session_store.py
 
 Disk-based persistence for analysis results and resume bytes.
-Survives Streamlit page navigation within the same app instance.
-Uses a fixed slot per app instance — single-user tool, no auth needed.
+Namespaced by Streamlit session ID — safe for multiple concurrent users.
+Each user gets their own isolated slot. Old sessions auto-expire after 24 hours.
 """
 
 import json
 import pickle
+import time
 from pathlib import Path
 
-STORE_DIR = Path(__file__).resolve().parent / "logs"
-RESULT_PATH = STORE_DIR / "session_result.json"
-RESUME_PATH = STORE_DIR / "session_resume.pkl"
+STORE_DIR = Path(__file__).resolve().parent / "logs" / "sessions"
+SESSION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+
+
+def _get_session_id() -> str:
+    """Get a stable session ID from Streamlit's runtime context."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        if ctx:
+            return ctx.session_id
+    except Exception:
+        pass
+    try:
+        import streamlit as st
+        if "session_id" not in st.session_state:
+            import uuid
+            st.session_state["session_id"] = str(uuid.uuid4())
+        return st.session_state["session_id"]
+    except Exception:
+        return "default"
+
+
+def _session_dir() -> Path:
+    sid = _get_session_id()
+    d = STORE_DIR / sid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _result_path() -> Path:
+    return _session_dir() / "result.json"
+
+
+def _resume_path() -> Path:
+    return _session_dir() / "resume.pkl"
+
+
+def _touch_session() -> None:
+    """Update session timestamp for TTL tracking."""
+    ts = _session_dir() / ".last_access"
+    ts.write_text(str(time.time()))
+
+
+def _expire_old_sessions() -> None:
+    """Remove session dirs older than TTL. Runs opportunistically."""
+    if not STORE_DIR.exists():
+        return
+    now = time.time()
+    for session_dir in STORE_DIR.iterdir():
+        if not session_dir.is_dir():
+            continue
+        ts_file = session_dir / ".last_access"
+        try:
+            last = float(ts_file.read_text()) if ts_file.exists() else session_dir.stat().st_mtime
+            if now - last > SESSION_TTL_SECONDS:
+                for f in session_dir.iterdir():
+                    f.unlink(missing_ok=True)
+                session_dir.rmdir()
+        except Exception:
+            pass
 
 
 def save_result(result: dict) -> None:
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    # Strip non-serializable objects before saving
+    _touch_session()
+    _expire_old_sessions()
     safe = {k: v for k, v in result.items() if _is_json_safe(v)}
-    RESULT_PATH.write_text(json.dumps(safe, ensure_ascii=True), encoding="utf-8")
+    _result_path().write_text(json.dumps(safe, ensure_ascii=True), encoding="utf-8")
 
 
 def load_result() -> dict | None:
-    if not RESULT_PATH.exists():
+    p = _result_path()
+    if not p.exists():
         return None
     try:
-        return json.loads(RESULT_PATH.read_text(encoding="utf-8"))
+        _touch_session()
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
 
 
 def save_resume(uploaded_file) -> None:
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    _touch_session()
     uploaded_file.seek(0)
     data = uploaded_file.read()
     uploaded_file.seek(0)
-    RESUME_PATH.write_bytes(pickle.dumps({
+    _resume_path().write_bytes(pickle.dumps({
         "name": uploaded_file.name,
         "data": data,
     }))
 
 
 def load_resume():
-    if not RESUME_PATH.exists():
+    p = _resume_path()
+    if not p.exists():
         return None
     try:
-        payload = pickle.loads(RESUME_PATH.read_bytes())
+        _touch_session()
+        payload = pickle.loads(p.read_bytes())
         from io import BytesIO
 
         class _RestoredFile:
@@ -63,9 +126,9 @@ def load_resume():
 
 
 def clear_store() -> None:
-    for p in (RESULT_PATH, RESUME_PATH):
+    for p in (_result_path(), _resume_path()):
         if p.exists():
-            p.unlink()
+            p.unlink(missing_ok=True)
 
 
 def _is_json_safe(value) -> bool:
@@ -74,3 +137,4 @@ def _is_json_safe(value) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+

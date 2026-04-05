@@ -76,13 +76,13 @@ SECTION_WEIGHTS = {
 }
 
 SCORE_WEIGHTS = {
-    "phrase_overlap": 0.16,
-    "keyword_overlap": 0.06,
-    "skills_domain_match": 0.18,
+    "phrase_overlap": 0.12,
+    "keyword_overlap": 0.05,
+    "skills_domain_match": 0.17,
     "seniority_alignment": 0.12,
-    "section_alignment": 0.12,
-    "translation_fit": 0.18,
-    "evidence_alignment": 0.18,
+    "section_alignment": 0.10,
+    "translation_fit": 0.22,
+    "evidence_alignment": 0.22,
 }
 
 PHRASE_LIBRARY = {
@@ -465,6 +465,35 @@ def dedupe_keep_order(items):
     return results
 
 
+NOISE_BIGRAM_PATTERNS = {
+    "clientfacing", "executivelatam", "skillfull", "governanceoperational",
+    "managementmarkets", "generativegovernance", "financialservices",
+    "largefinancial", "marketfinancial", "mandatoryreporting",
+}
+
+NOISE_BIGRAM_PAIRS = {
+    ("client", "facing"), ("executive", "latam"), ("skills", "financial"),
+    ("governance", "operational"), ("management", "markets"),
+    ("generative", "governance"), ("large", "financial"),
+    ("market", "financial"), ("mandatory", "reporting"),
+    ("financial", "institution"), ("financial", "services"),
+    ("frameworks", "financial"),
+}
+
+def _is_noise_phrase(phrase: str) -> bool:
+    """Reject bigrams that are PDF extraction artifacts, not real role phrases."""
+    tokens = phrase.split()
+    if len(tokens) == 2:
+        pair = (tokens[0], tokens[1])
+        if pair in NOISE_BIGRAM_PAIRS:
+            return True
+    if len(tokens) >= 2:
+        joined = "".join(tokens)
+        if joined in NOISE_BIGRAM_PATTERNS:
+            return True
+    return False
+
+
 def extract_priority_phrases(preprocessed):
     known = sorted(
         extract_known_phrases(preprocessed["normalized_text"]),
@@ -475,6 +504,8 @@ def extract_priority_phrases(preprocessed):
 
     candidate_ngrams = []
     for phrase in extract_ngrams(preprocessed["filtered_tokens"]):
+        if _is_noise_phrase(phrase):
+            continue
         tokens = phrase.split()
         if not any(token in DOMAIN_TERMS or token in PLATFORM_TERMS or token in SENIORITY_TERMS for token in tokens):
             continue
@@ -515,6 +546,44 @@ def compute_overlap_percentage(resume_items, job_items):
     resume_set = set(resume_items)
     job_set = set(job_items)
     return (len(resume_set & job_set) / len(job_set)) * 100
+
+
+def compute_phrase_overlap_with_translation(resume_phrases, job_phrases, resume_normalized_text):
+    """
+    Phrase overlap that awards partial credit when a JD phrase is absent
+    but its translation equivalent is present in the resume.
+
+    Calibrated from real outcomes:
+    - JPMC 66% (Under Consideration): translation_fit 100%, phrase_overlap 8.3%
+      — literal overlap understated true fit significantly
+    - WF 82% (Interview): translation_fit 100%, phrase_overlap 25%
+      — literal overlap was closer to true fit
+
+    Translation credit: 0.6 of a full match (not 0 and not 1).
+    This prevents over-rewarding pure translation with no literal evidence.
+    """
+    if not job_phrases:
+        return 0.0
+
+    resume_set = set(resume_phrases)
+    score = 0.0
+
+    for jd_phrase in job_phrases:
+        if jd_phrase in resume_set:
+            score += 1.0
+        else:
+            equivalents = TRANSLATION_MAP.get(jd_phrase, set())
+            reverse_equivalents = {
+                eq
+                for term, eqs in TRANSLATION_MAP.items()
+                for eq in eqs
+                if jd_phrase in eqs and term in resume_set
+            }
+            all_equivalents = equivalents | reverse_equivalents
+            if any(eq in resume_normalized_text for eq in all_equivalents):
+                score += 0.6
+
+    return (score / len(job_phrases)) * 100
 
 
 def has_phrase_evidence(text, phrases):
@@ -960,10 +1029,20 @@ def compute_resume_strength_score(score_breakdown, role_family_buckets):
     return round(min(blended_score, 100))
 
 
-def get_strength_band(score):
+def get_strength_band(score, translation_fit=0, evidence_alignment=0):
+    """
+    Fit bands calibrated against real ATS outcomes:
+    - JPMC 66%, translation_fit 100%, evidence 61% → Under Consideration
+    - WF 82%, translation_fit 100%, evidence 100% → Interview
+
+    A high translation_fit + evidence_alignment at 60-74% indicates
+    genuine fit that literal phrase matching is understating.
+    """
     if score >= 75:
         return "Strong match"
     if score >= 60:
+        if translation_fit >= 80 and evidence_alignment >= 50:
+            return "Strong translated fit"
         return "Good match"
     if score >= 45:
         return "Moderate match"
@@ -1003,7 +1082,9 @@ def analyze_documents(resume_file, job_file, debug=False):
     keyword_overlap = compute_overlap_percentage(
         resume_preprocessed["filtered_tokens"], job_focus_preprocessed["filtered_tokens"]
     )
-    phrase_overlap = compute_overlap_percentage(resume_phrases, job_phrases)
+    phrase_overlap = compute_phrase_overlap_with_translation(
+        resume_phrases, job_phrases, resume_preprocessed["normalized_text"]
+    )
 
     skills_domain_match = round(
         (
@@ -1072,7 +1153,11 @@ def analyze_documents(resume_file, job_file, debug=False):
         score_breakdown,
         role_family_buckets,
     )
-    strength_band = get_strength_band(resume_strength_score)
+    strength_band = get_strength_band(
+        resume_strength_score,
+        translation_fit=score_breakdown["translation_fit"],
+        evidence_alignment=score_breakdown["evidence_alignment"],
+    )
     top_skills = get_top_skills(
         job_phrases,
         resume_phrases,
