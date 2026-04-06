@@ -200,35 +200,60 @@ JOB_DESCRIPTION_NOISE_PATTERNS = [
     r"\b(privacy policy|terms of use|cookie policy|accessibility statement)\b",
     r"\b(corporate footer|global footer|site footer)\b",
     r"\b(jpmorgan chase & co\.?|jpmorganchase|jpmc|oracle|successfactors)\b",
+    r"\b(blackrock runs on aladdin|blackrock is proud|blackrock operates)\b",
+    r"\b(our hybrid work model|hybrid work model|days in the office)\b",
+    r"\b(similar jobs|view all \d+ jobs|follow us|about blackrock|about us)\b",
+    r"\b(workday inc|all rights reserved|pay transparency)\b",
 ]
 
 JOB_SECTION_PATTERNS = {
     "responsibilities": (
         "key responsibilities",
         "responsibilities",
+        "your responsibilities",
         "what you'll do",
         "what you will do",
+        "the role",
+        "about the role",
+        "your role",
+        "what we need",
     ),
     "required_qualifications": (
         "required qualifications",
         "required qualifications, capabilities, and skills",
         "qualifications",
+        "your qualifications",
         "what you bring",
+        "what you'll bring",
+        "minimum qualifications",
+        "basic qualifications",
+        "requirements",
     ),
     "preferred_qualifications": (
         "preferred qualifications",
         "preferred qualifications, capabilities, and skills",
         "preferred skills",
         "preferred experience",
+        "nice if you have",
+        "nice to have",
+        "bonus points",
+        "additional qualifications",
     ),
 }
 
 JOB_SECTION_STOP_LINES = {
     "about us",
     "about the team",
+    "your team",
+    "about this role",
+    "about blackrock",
+    "our benefits",
+    "our hybrid work model",
     "similar jobs",
     "privacy & terms",
     "privacy terms useful links",
+    "equal opportunity",
+    "view all",
 }
 
 RESUME_FILE_SIZE_LIMIT_MB = 50
