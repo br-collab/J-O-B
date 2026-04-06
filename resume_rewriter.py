@@ -138,6 +138,7 @@ def rewrite_resume(
         ],
         temperature=0.15,
         max_tokens=4000,
+        response_format={"type": "json_object"},
     )
 
     raw = response.choices[0].message.content.strip()
@@ -150,41 +151,52 @@ def rewrite_resume(
             if not line.strip().startswith("```")
         ).strip()
 
-    # Attempt 1: parse as-is
-    # Attempt 2: strip all control characters except \t and \n
-    # Attempt 3: replace literal \r\n and \r with \n, re-strip
-    # Attempt 4: encode/decode round-trip to drop bad bytes
     import re
 
-    def _try_parse(text: str) -> dict:
-        return json.loads(text)
-
     def _sanitize(text: str) -> str:
-        # Remove control chars except tab (\x09) and newline (\x0a)
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-        # Normalize Windows line endings
+        # Replace control chars except tab and newline with a space
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', ' ', text)
         text = text.replace('\r\n', '\n').replace('\r', '\n')
-        # Replace non-breaking spaces and other problematic Unicode whitespace
-        text = re.sub(r'[\u00a0\u2000-\u200f\u2028\u2029\ufeff]', ' ', text)
+        text = re.sub(r'[\u00a0\u00ad\u200b-\u200f\u2028\u2029\u202f\u205f\ufeff]', ' ', text)
         return text
 
+    def _aggressive(text: str) -> str:
+        """Keep only printable ASCII + tab + newline. Drops all other chars."""
+        out = []
+        for ch in text:
+            cp = ord(ch)
+            if cp in (0x09, 0x0a):
+                out.append(ch)
+            elif 0x20 <= cp <= 0x7e:
+                out.append(ch)
+            elif cp > 0x7e:
+                out.append(ch)  # keep Unicode, it's valid in JSON
+        return "".join(out)
+
     last_error = None
-    for attempt, candidate in enumerate([
-        raw,
-        _sanitize(raw),
-        _sanitize(raw).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore'),
-    ]):
+    parsed = None
+
+    for candidate in [raw, _sanitize(raw), _aggressive(raw), _aggressive(_sanitize(raw))]:
         try:
-            parsed = _try_parse(candidate)
+            parsed = json.loads(candidate)
             break
         except json.JSONDecodeError as e:
             last_error = e
-            continue
-    else:
+
+    # Final fallback: surgically remove the character at the reported bad position
+    if parsed is None and last_error is not None:
+        try:
+            bad = _aggressive(_sanitize(raw))
+            pos = last_error.pos
+            fixed = bad[:pos] + bad[pos+1:]
+            parsed = json.loads(fixed)
+        except Exception:
+            pass
+
+    if parsed is None:
         raise ValueError(
-            f"OpenAI returned unparseable JSON after {attempt+1} attempts. "
-            f"Last error: {last_error}. "
-            f"Raw response (first 500 chars): {raw[:500]}"
+            "OpenAI returned content that could not be parsed as JSON. "
+            "Click Generate Rewrite again — this is an intermittent model output issue."
         )
 
     for key in ("summary", "experience", "skills", "education", "certifications", "grounding_notes"):
