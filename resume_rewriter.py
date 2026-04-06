@@ -141,15 +141,51 @@ def rewrite_resume(
     )
 
     raw = response.choices[0].message.content.strip()
+
+    # Strip markdown fences if present
     if raw.startswith("```"):
-        raw = raw.strip("`").replace("json", "", 1).strip()
+        lines = raw.splitlines()
+        raw = "\n".join(
+            line for line in lines
+            if not line.strip().startswith("```")
+        ).strip()
 
-    # Strip control characters that break json.loads
-    # Keep tabs and newlines (valid in JSON strings), remove everything else below 0x20
+    # Attempt 1: parse as-is
+    # Attempt 2: strip all control characters except \t and \n
+    # Attempt 3: replace literal \r\n and \r with \n, re-strip
+    # Attempt 4: encode/decode round-trip to drop bad bytes
     import re
-    raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', raw)
 
-    parsed = json.loads(raw)
+    def _try_parse(text: str) -> dict:
+        return json.loads(text)
+
+    def _sanitize(text: str) -> str:
+        # Remove control chars except tab (\x09) and newline (\x0a)
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        # Normalize Windows line endings
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        # Replace non-breaking spaces and other problematic Unicode whitespace
+        text = re.sub(r'[\u00a0\u2000-\u200f\u2028\u2029\ufeff]', ' ', text)
+        return text
+
+    last_error = None
+    for attempt, candidate in enumerate([
+        raw,
+        _sanitize(raw),
+        _sanitize(raw).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore'),
+    ]):
+        try:
+            parsed = _try_parse(candidate)
+            break
+        except json.JSONDecodeError as e:
+            last_error = e
+            continue
+    else:
+        raise ValueError(
+            f"OpenAI returned unparseable JSON after {attempt+1} attempts. "
+            f"Last error: {last_error}. "
+            f"Raw response (first 500 chars): {raw[:500]}"
+        )
 
     for key in ("summary", "experience", "skills", "education", "certifications", "grounding_notes"):
         if key not in parsed:
